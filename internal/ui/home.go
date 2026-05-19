@@ -1779,10 +1779,14 @@ func (h *Home) syncViewport() {
 	if h.maintenanceMsg != "" {
 		maintenanceBannerHeight = 1
 	}
+	debugBarHeight := 0
+	if h.debugMode {
+		debugBarHeight = 1
+	}
 
 	// contentHeight = total height for main content area
-	// -1 for header line, -helpBarHeight for help bar, -updateBannerHeight, -maintenanceBannerHeight, -filterBarHeight
-	contentHeight := h.height - 1 - helpBarHeight - updateBannerHeight - maintenanceBannerHeight - filterBarHeight
+	// MUST match View(): subtract debugBarHeight when the debug footer is rendered.
+	contentHeight := h.height - 1 - helpBarHeight - updateBannerHeight - maintenanceBannerHeight - filterBarHeight - debugBarHeight
 
 	// CRITICAL: Calculate panelContentHeight based on current layout mode
 	// This MUST match the calculations in renderStackedLayout/renderDualColumnLayout/renderSingleColumnLayout
@@ -1922,8 +1926,12 @@ func (h *Home) getVisibleHeight() int {
 	if h.maintenanceMsg != "" {
 		maintenanceBannerHeight = 1
 	}
+	debugBarHeight := 0
+	if h.debugMode {
+		debugBarHeight = 1
+	}
 
-	contentHeight := h.height - 1 - helpBarHeight - updateBannerHeight - maintenanceBannerHeight - filterBarHeight
+	contentHeight := h.height - 1 - helpBarHeight - updateBannerHeight - maintenanceBannerHeight - filterBarHeight - debugBarHeight
 
 	var panelContentHeight int
 	layoutMode := h.getLayoutMode()
@@ -2382,6 +2390,7 @@ func (h *Home) pruneAnalyticsCache() {
 
 	// Prune MCP info cache (entries older than 10 minutes)
 	session.PruneMCPCache(maxAge)
+	session.PruneCursorMCPCache(maxAge)
 }
 
 // setError sets an error with timestamp for auto-dismiss
@@ -6557,11 +6566,11 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return h, nil
 
 	case "m":
-		// MCP Manager - for Claude and Gemini sessions
+		// MCP Manager — Claude, Gemini, and Cursor Agent CLI
 		if h.cursor < len(h.flatItems) {
 			item := h.flatItems[h.cursor]
 			if item.Type == session.ItemTypeSession && item.Session != nil &&
-				(session.IsClaudeCompatible(item.Session.Tool) || item.Session.Tool == "gemini") {
+				session.ToolSupportsMCPManager(item.Session.Tool) {
 				h.mcpDialog.SetSize(h.width, h.height)
 				if err := h.mcpDialog.Show(item.Session.ProjectPath, item.Session.ID, item.Session.Tool); err != nil {
 					h.setError(err)
@@ -11210,7 +11219,7 @@ func (h *Home) renderHelpBarMinimal() string {
 					contextKeys += " " + forkRendered
 				}
 			}
-			if item.Session != nil && (session.IsClaudeCompatible(item.Session.Tool) || item.Session.Tool == "gemini") {
+			if item.Session != nil && session.ToolSupportsMCPManager(item.Session.Tool) {
 				mcpRendered := renderKeys(mcpKey)
 				if mcpRendered != "" {
 					contextKeys += " " + mcpRendered
@@ -11310,7 +11319,7 @@ func (h *Home) renderHelpBarCompact() string {
 					contextHints = append(contextHints, h.helpKeyShort(key, "Fork"))
 				}
 			}
-			if item.Session != nil && (session.IsClaudeCompatible(item.Session.Tool) || item.Session.Tool == "gemini") {
+			if item.Session != nil && session.ToolSupportsMCPManager(item.Session.Tool) {
 				if key := h.actionKey(hotkeyMCPManager); key != "" {
 					contextHints = append(contextHints, h.helpKeyShort(key, "MCP"))
 				}
@@ -11489,7 +11498,7 @@ func (h *Home) renderHelpBarFull() string {
 				}
 			}
 			// Show MCP Manager and preview mode toggle for Claude and Gemini sessions
-			if item.Session != nil && (session.IsClaudeCompatible(item.Session.Tool) || item.Session.Tool == "gemini") {
+			if item.Session != nil && session.ToolSupportsMCPManager(item.Session.Tool) {
 				if mcpKey != "" {
 					primaryHints = append(primaryHints, h.helpKey(mcpKey, "MCP"))
 				}
@@ -11748,7 +11757,7 @@ func (h *Home) renderSessionList(width, height int) string {
 		if h.jumpMode && i < len(jumpHints) {
 			// Render item to temp buffer, then overlay hint badge at name position
 			var itemBuf strings.Builder
-			h.renderItem(&itemBuf, item, i == h.cursor, i, groupStats, snapshot)
+			h.renderItem(&itemBuf, item, i == h.cursor, i, groupStats, snapshot, width)
 			raw := itemBuf.String()
 			hint := jumpHints[i]
 			isMatch := h.jumpBuffer == "" || strings.HasPrefix(hint, h.jumpBuffer)
@@ -11768,7 +11777,7 @@ func (h *Home) renderSessionList(width, height int) string {
 				b.WriteString(raw)
 			}
 		} else {
-			h.renderItem(&b, item, i == h.cursor, i, groupStats, snapshot)
+			h.renderItem(&b, item, i == h.cursor, i, groupStats, snapshot, width)
 		}
 		visibleCount++
 	}
@@ -11846,6 +11855,7 @@ func (h *Home) renderItem(
 	itemIndex int,
 	groupStats map[string]groupRenderStats,
 	snapshot map[string]sessionRenderState,
+	listWidth int,
 ) {
 	switch item.Type {
 	case session.ItemTypeGroup:
@@ -11854,7 +11864,7 @@ func (h *Home) renderItem(
 		if item.CreatingID != "" {
 			h.renderCreatingSessionItem(b, item, selected)
 		} else {
-			h.renderSessionItem(b, item, selected, snapshot)
+			h.renderSessionItem(b, item, selected, snapshot, listWidth)
 		}
 	case session.ItemTypeWindow:
 		h.renderWindowItem(b, item, selected)
@@ -12037,6 +12047,7 @@ func (h *Home) renderSessionItem(
 	item session.Item,
 	selected bool,
 	snapshot map[string]sessionRenderState,
+	listWidth int,
 ) {
 	inst := item.Session
 
@@ -12269,7 +12280,11 @@ func (h *Home) renderSessionItem(
 	// the panel and shove subsequent rows down by one cell. See
 	// internal/ui/cellwidth.go for the upstream disagreement.
 	if selected && instState.paneTitle != "" {
-		remaining := h.width - cellWidth(row) - 2 // -2 for trailing margin
+		// Dual layout: sidebar is narrower than h.width (#937). Using full
+		// terminal width here overflows the SESSIONS pane, then lipgloss
+		// truncation disagrees from terminal cells — wrapped lines duplicate
+		// rows visually and mouseY→item indexing breaks until scroll settles.
+		remaining := listWidth - cellWidth(row) - 2 // -2 for trailing margin
 		if remaining > 10 {
 			pt := instState.paneTitle
 			if cellWidth(pt) > remaining {
@@ -13345,6 +13360,23 @@ func (h *Home) renderPreviewPane(width, height int) string {
 			b.WriteString("\n")
 			renderLaunchModelInfoLines(&b, selected)
 		}
+	}
+
+	// Cursor Agent CLI — MCP configuration for `cursor agent`
+	if selected.Tool == "cursor" {
+		cursorHeader := renderSectionDivider("Cursor", width-4)
+		b.WriteString(cursorHeader)
+		b.WriteString("\n")
+
+		labelStyle := lipgloss.NewStyle().Foreground(ColorText)
+		valueStyle := lipgloss.NewStyle().Foreground(ColorText)
+		b.WriteString(labelStyle.Render("Tool:    "))
+		b.WriteString(valueStyle.Render("Cursor Agent CLI"))
+		b.WriteString("\n")
+		renderLaunchModelInfoLines(&b, selected)
+
+		mcpInfo := selected.GetMCPInfo()
+		renderSimpleMCPLine(&b, mcpInfo, width)
 	}
 
 	// OpenCode-specific info (session ID)
