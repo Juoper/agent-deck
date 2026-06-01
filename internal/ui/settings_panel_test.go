@@ -1020,7 +1020,9 @@ func TestSettingsPanel_ViewUsesConfiguredMCPHotkeyHint(t *testing.T) {
 	panel.cursor = int(SettingStatsShowLoad)
 
 	view := panel.View()
-	if !containsString(view, "Press ctrl+m on any Claude, Gemini, or Cursor session to attach MCPs.") {
+	// Hint may wrap across dialog lines; assert on stable fragments rather than one contiguous string.
+	if !containsString(view, "Press ctrl+m on any Claude, Gemini, or Cursor session") ||
+		!containsString(view, "attach MCPs") {
 		t.Fatalf("settings view should show configured MCP key hint, got %q", view)
 	}
 }
