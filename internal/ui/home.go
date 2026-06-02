@@ -10914,12 +10914,9 @@ func (h *Home) renderDualColumnLayout(contentHeight int) string {
 	// Join panels horizontally - all components have exact heights AND widths now
 	mainContent := lipgloss.JoinHorizontal(lipgloss.Top, leftPanel, separator, rightPanel)
 
-	// Safety net: enforce per-line MaxWidth on the joined output.
-	// Even with ensureExactWidth, JoinHorizontal can produce lines wider than
-	// h.width due to separator ANSI codes or rounding. Any line that wraps in the
-	// terminal adds a visual line, which shifts Bubble Tea's cursor tracking and
-	// causes duplicated/stacked content on scroll.
-	mainContent = lipgloss.NewStyle().MaxWidth(h.width).Render(mainContent)
+	// Pad joined lines to h.width (not lipgloss.MaxWidth, which wraps and leaves
+	// ghost cells on incremental redraw — issue #607).
+	mainContent = fitLinesToWidth(mainContent, h.width)
 
 	b.WriteString(mainContent)
 
@@ -11879,7 +11876,7 @@ func (h *Home) renderSessionList(width, height int) string {
 	}
 
 	// Height padding is handled by ensureExactHeight() in View() for consistency
-	return b.String()
+	return fitLinesToWidth(b.String(), width)
 }
 
 type groupRenderStats struct {
