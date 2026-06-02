@@ -3758,14 +3758,16 @@ func (h *Home) processStatusUpdate(req statusUpdateRequest) {
 // clears (issue #607). Under the default (full_repaint = false) this wrapper
 // is a pass-through — no regression for users who never opt in.
 //
-// On iTerm2, also clear when viewOffset changes: inserting/removing the
-// "more above" row shifts list content by one terminal line and incremental
-// redraw leaves ghosts at the top/bottom without a one-shot clear.
+// In dual (split) layout, clear when the list scroll position or cursor moves.
+// iTerm2 (often via tmux, so DetectTerminal() may not be "iterm2") leaves
+// stale cells on incremental redraw when row content changes at the viewport edge.
 func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	prevOffset := h.viewOffset
+	prevCursor := h.cursor
 	model, cmd := h.updateInner(msg)
 	if home, ok := model.(*Home); ok {
-		if home.viewOffset != prevOffset && tmux.DetectTerminal() == "iterm2" {
+		if home.getLayoutMode() == LayoutModeDual &&
+			(home.viewOffset != prevOffset || home.cursor != prevCursor) {
 			cmd = appendClearScreen(cmd)
 		}
 	}
@@ -10918,6 +10920,46 @@ func ensureExactWidth(content string, width int) string {
 	return strings.Join(result, "\n")
 }
 
+// joinDualColumnRows assembles SESSIONS | PREVIEW one terminal row at a time using
+// cellWidth for every segment. Avoids lipgloss.JoinHorizontal, whose lipgloss.Width
+// accounting disagrees with cell-padded list rows and leaves iTerm2 ghosts (#607).
+func joinDualColumnRows(leftPanel, separator, rightPanel string, leftWidth, rightWidth, frameWidth int) string {
+	leftLines := strings.Split(leftPanel, "\n")
+	sepLines := strings.Split(separator, "\n")
+	rightLines := strings.Split(rightPanel, "\n")
+	height := len(leftLines)
+	if len(sepLines) > height {
+		height = len(sepLines)
+	}
+	if len(rightLines) > height {
+		height = len(rightLines)
+	}
+	var b strings.Builder
+	for i := 0; i < height; i++ {
+		ll := ""
+		if i < len(leftLines) {
+			ll = leftLines[i]
+		}
+		sl := ""
+		if i < len(sepLines) {
+			sl = sepLines[i]
+		}
+		rl := ""
+		if i < len(rightLines) {
+			rl = rightLines[i]
+		}
+		ll = fitCellWidth(ll, leftWidth)
+		rl = fitCellWidth(rl, rightWidth)
+		row := fitCellWidthErase(ll+sl+rl, frameWidth)
+		b.WriteString(row)
+		b.WriteString("\n")
+	}
+	if height == 0 {
+		return ""
+	}
+	return strings.TrimSuffix(b.String(), "\n")
+}
+
 // renderDualColumnLayout renders side-by-side panels for wide terminals (80+ cols)
 func (h *Home) renderDualColumnLayout(contentHeight int) string {
 	var b strings.Builder
@@ -10967,16 +11009,11 @@ func (h *Home) renderDualColumnLayout(contentHeight int) string {
 	leftPanel = ensureExactHeight(leftPanel, contentHeight)
 	rightPanel = ensureExactHeight(rightPanel, contentHeight)
 
-	// CRITICAL: Ensure both panels have exactly the correct width for proper alignment
-	// Without this, variable-width lines cause JoinHorizontal to misalign content
-	leftPanel = ensureExactWidth(leftPanel, leftWidth)
-	rightPanel = ensureExactWidth(rightPanel, rightWidth)
+	// Cell-accurate per-line width before join (no EL yet — join adds it once per row).
+	leftPanel = fitLinesToCellWidth(leftPanel, leftWidth)
+	rightPanel = fitLinesToCellWidth(rightPanel, rightWidth)
 
-	// Join panels horizontally - all components have exact heights AND widths now
-	mainContent := lipgloss.JoinHorizontal(lipgloss.Top, leftPanel, separator, rightPanel)
-
-	// Pad joined lines to h.width (MaxWidth wraps and leaves ghost cells on scroll).
-	mainContent = fitLinesToWidth(mainContent, h.width)
+	mainContent := joinDualColumnRows(leftPanel, separator, rightPanel, leftWidth, rightWidth, h.width)
 
 	b.WriteString(mainContent)
 
@@ -11913,7 +11950,7 @@ func (h *Home) renderSessionList(width, height int) string {
 				itemName := jumpItemName(item)
 				// Overlay hint on the first line, preserve rest exactly
 				if idx := strings.Index(raw, "\n"); idx >= 0 {
-					b.WriteString(fitCellWidthErase(h.overlayJumpHint(raw[:idx], hint, h.jumpBuffer, itemName), width))
+					b.WriteString(fitCellWidth(h.overlayJumpHint(raw[:idx], hint, h.jumpBuffer, itemName), width))
 					b.WriteString(raw[idx:]) // includes \n and any subsequent lines
 				} else {
 					writeListLine(&b, h.overlayJumpHint(raw, hint, h.jumpBuffer, itemName), width)
@@ -11921,7 +11958,7 @@ func (h *Home) renderSessionList(width, height int) string {
 			} else {
 				// Non-matching: render normally (no dimming to preserve layout)
 				if idx := strings.Index(raw, "\n"); idx >= 0 {
-					b.WriteString(fitCellWidthErase(raw[:idx], width))
+					b.WriteString(fitCellWidth(raw[:idx], width))
 					b.WriteString(raw[idx:])
 				} else {
 					writeListLine(&b, strings.TrimSuffix(raw, "\n"), width)
@@ -11998,10 +12035,11 @@ func (h *Home) buildGroupRenderStats(snapshot map[string]sessionRenderState) map
 	return stats
 }
 
-// writeListLine emits one session-list row at exactly width cells plus EL (#607).
+// writeListLine emits one session-list row at exactly width cells (#607).
+// EL is applied once per joined frame row in split layout, not per list row.
 func writeListLine(b *strings.Builder, line string, width int) {
 	if width > 0 {
-		line = fitCellWidthErase(line, width)
+		line = fitCellWidth(line, width)
 	}
 	b.WriteString(line)
 	b.WriteString("\n")

@@ -67,6 +67,18 @@ func fitCellWidthErase(s string, width int) string {
 	return fitCellWidth(s, width) + ansiEraseLineEnd
 }
 
+// fitLinesToCellWidth pads each line to width terminal cells (no EL).
+func fitLinesToCellWidth(content string, width int) string {
+	if width <= 0 || content == "" {
+		return content
+	}
+	lines := strings.Split(content, "\n")
+	for i := range lines {
+		lines[i] = fitCellWidth(lines[i], width)
+	}
+	return strings.Join(lines, "\n")
+}
+
 // fitLinesToWidth pads each line to width terminal cells plus EL.
 func fitLinesToWidth(content string, width int) string {
 	if width <= 0 || content == "" {
