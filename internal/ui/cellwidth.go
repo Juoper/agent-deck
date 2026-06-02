@@ -55,6 +55,30 @@ func fitCellWidth(s string, width int) string {
 	return s
 }
 
+// ansiEraseLineEnd (EL) clears from the cursor to end of line. Appended after
+// padded rows so iTerm2 incremental redraw drops stale trailing cells (#607).
+const ansiEraseLineEnd = "\x1b[K"
+
+// fitCellWidthErase is fitCellWidth plus EL.
+func fitCellWidthErase(s string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	return fitCellWidth(s, width) + ansiEraseLineEnd
+}
+
+// fitLinesToWidth pads each line to width terminal cells plus EL.
+func fitLinesToWidth(content string, width int) string {
+	if width <= 0 || content == "" {
+		return content
+	}
+	lines := strings.Split(content, "\n")
+	for i := range lines {
+		lines[i] = fitCellWidthErase(lines[i], width)
+	}
+	return strings.Join(lines, "\n")
+}
+
 // cellTruncate returns a prefix of s whose cellWidth is <= width, appending
 // tail (also measured by cellWidth) if any truncation occurred.
 //
