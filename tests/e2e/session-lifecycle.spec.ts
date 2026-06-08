@@ -149,9 +149,13 @@ test.describe('Session lifecycle E2E', () => {
     await expect(archiveBtn).toBeVisible({ timeout: 3000 })
     await archiveBtn.click()
 
-    const confirmDialog = page.locator('.fixed.inset-0.z-50.bg-black\\/50')
+    const confirmDialog = page.locator('.overlay')
     await expect(confirmDialog).toBeVisible({ timeout: 5000 })
+    const archiveResponse = page.waitForResponse(
+      resp => resp.request().method() === 'POST' && resp.url().includes('/archive') && resp.status() === 200,
+    )
     await confirmDialog.getByRole('button', { name: 'Delete', exact: true }).click()
+    await archiveResponse
 
     await page.goto('/?token=test')
     await waitForAppReady(page)
@@ -161,7 +165,11 @@ test.describe('Session lifecycle E2E', () => {
     await page.getByRole('button', { name: 'Archived' }).click()
     await expect(page.getByText('Blog drafts')).toBeVisible({ timeout: 5000 })
 
+    const unarchiveResponse = page.waitForResponse(
+      resp => resp.request().method() === 'POST' && resp.url().includes('/unarchive') && resp.status() === 200,
+    )
     await page.getByRole('button', { name: 'Unarchive' }).click()
+    await unarchiveResponse
     await page.goto('/?token=test')
     await waitForAppReady(page)
     await page.waitForSelector('#preact-session-list', { state: 'attached', timeout: 10000 })

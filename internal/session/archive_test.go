@@ -1,8 +1,11 @@
 package session
 
 import (
+	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/statedb"
 )
 
 func TestFilterInstancesByArchive(t *testing.T) {
@@ -46,4 +49,51 @@ func ids(insts []*Instance) []string {
 		}
 	}
 	return out
+}
+
+func TestArchivedAtStorageRoundTrip(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "state.db")
+	db, err := statedb.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := db.Migrate(); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	storage := &Storage{db: db, dbPath: dbPath, profile: "_test"}
+	archivedAt := time.Date(2026, 6, 2, 12, 0, 0, 0, time.UTC)
+	inst := &Instance{
+		ID:          "arch-store",
+		Title:       "Archived",
+		ProjectPath: "/tmp",
+		GroupPath:   "grp",
+		Tool:        "shell",
+		Status:      StatusStopped,
+		CreatedAt:   time.Now(),
+		ArchivedAt:  archivedAt,
+	}
+	if err := storage.SaveWithGroups([]*Instance{inst}, nil); err != nil {
+		t.Fatalf("SaveWithGroups: %v", err)
+	}
+
+	loaded, _, err := storage.LoadWithGroups()
+	if err != nil {
+		t.Fatalf("LoadWithGroups: %v", err)
+	}
+	if len(loaded) != 1 {
+		t.Fatalf("loaded %d instances, want 1", len(loaded))
+	}
+	if !loaded[0].IsArchived() {
+		t.Fatal("expected archived instance after reload")
+	}
+	if !loaded[0].ArchivedAt.Equal(archivedAt) {
+		t.Errorf("ArchivedAt: got %v want %v", loaded[0].ArchivedAt, archivedAt)
+	}
+	arch := FilterInstancesByArchive(loaded, true)
+	if len(arch) != 1 || arch[0].ID != "arch-store" {
+		t.Fatalf("archived filter after reload: got %+v", ids(arch))
+	}
 }

@@ -1763,7 +1763,7 @@ func (h *Home) rebuildFlatItems() {
 	}
 	h.remoteSessionsMu.RUnlock()
 	sort.Strings(remoteNames)
-	if len(remotes) > 0 {
+	if len(remotes) > 0 && h.statusFilter != FilterModeArchived {
 		for _, remoteName := range remoteNames {
 			sessions := remotes[remoteName]
 			// Add remote group header
@@ -4473,7 +4473,8 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case sessionArchivedMsg:
 		if msg.killErr != nil {
-			h.setError(fmt.Errorf("archived with warnings: %w", msg.killErr))
+			h.setError(fmt.Errorf("failed to archive: %w", msg.killErr))
+			return h, nil
 		}
 		h.cachedStatusCounts.valid.Store(false)
 		h.invalidatePreviewCache(msg.sessionID)
@@ -10289,9 +10290,11 @@ func (h *Home) closeSession(inst *session.Instance) tea.Cmd {
 func (h *Home) archiveSession(inst *session.Instance) tea.Cmd {
 	id := inst.ID
 	return func() tea.Msg {
-		killErr := inst.Kill()
+		if killErr := inst.Kill(); killErr != nil {
+			return sessionArchivedMsg{sessionID: id, killErr: killErr}
+		}
 		inst.ArchivedAt = time.Now().UTC()
-		return sessionArchivedMsg{sessionID: id, killErr: killErr}
+		return sessionArchivedMsg{sessionID: id}
 	}
 }
 

@@ -176,8 +176,12 @@ func (m *WebMutator) ArchiveSession(id string) error {
 	if inst == nil {
 		return fmt.Errorf("session not found: %s", id)
 	}
-	_ = inst.Kill()
+	if err := inst.Kill(); err != nil {
+		return fmt.Errorf("failed to stop session: %w", err)
+	}
+	m.h.instancesMu.Lock()
 	inst.ArchivedAt = time.Now().UTC()
+	m.h.instancesMu.Unlock()
 	return m.persistAllInstances()
 }
 
@@ -189,10 +193,13 @@ func (m *WebMutator) UnarchiveSession(id string) error {
 	if inst == nil {
 		return fmt.Errorf("session not found: %s", id)
 	}
+	m.h.instancesMu.Lock()
 	if !inst.IsArchived() {
+		m.h.instancesMu.Unlock()
 		return fmt.Errorf("session is not archived: %s", id)
 	}
 	inst.ArchivedAt = time.Time{}
+	m.h.instancesMu.Unlock()
 	return m.persistAllInstances()
 }
 

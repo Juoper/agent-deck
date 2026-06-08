@@ -1664,11 +1664,20 @@ func TestMigrate_OldSchema_AddArchivedAt(t *testing.T) {
 		t.Fatalf("LoadInstances: %v", err)
 	}
 	var row *InstanceRow
+	var foundExisting bool
 	for _, r := range loaded {
+		if r.ID == "existing-1" {
+			foundExisting = true
+			if !r.ArchivedAt.IsZero() {
+				t.Fatalf("existing-1 should remain unarchived after migrate, got %v", r.ArchivedAt)
+			}
+		}
 		if r.ID == "arch-test" {
 			row = r
-			break
 		}
+	}
+	if !foundExisting {
+		t.Fatal("existing-1 instance not found after migrate")
 	}
 	if row == nil {
 		t.Fatal("arch-test instance not found after save")
@@ -1686,6 +1695,39 @@ func TestMigrate_OldSchema_AddArchivedAt(t *testing.T) {
 	}
 	if ver != fmt.Sprintf("%d", SchemaVersion) {
 		t.Errorf("schema_version: got %q want %d", ver, SchemaVersion)
+	}
+}
+
+func TestInsertInstanceRow_ArchivedAtRoundTrip(t *testing.T) {
+	db := newTestDB(t)
+	archived := time.Date(2026, 6, 2, 9, 0, 0, 0, time.UTC)
+	row := &InstanceRow{
+		ID:          "xfer-arch",
+		Title:       "Xfer Archived",
+		ProjectPath: "/tmp",
+		GroupPath:   "grp",
+		Tool:        "shell",
+		Status:      "stopped",
+		Account:     "work@example.com",
+		CreatedAt:   time.Now(),
+		ArchivedAt:  archived,
+		ToolData:    json.RawMessage("{}"),
+	}
+	if err := db.InsertInstanceRow(row); err != nil {
+		t.Fatalf("InsertInstanceRow: %v", err)
+	}
+	loaded, err := db.LoadInstanceByID("xfer-arch")
+	if err != nil {
+		t.Fatalf("LoadInstanceByID: %v", err)
+	}
+	if loaded.ArchivedAt.IsZero() {
+		t.Fatal("ArchivedAt not round-tripped via InsertInstanceRow/LoadInstanceByID")
+	}
+	if !loaded.ArchivedAt.Equal(archived) {
+		t.Errorf("ArchivedAt: got %v want %v", loaded.ArchivedAt, archived)
+	}
+	if loaded.Account != row.Account {
+		t.Errorf("Account: got %q want %q", loaded.Account, row.Account)
 	}
 }
 
