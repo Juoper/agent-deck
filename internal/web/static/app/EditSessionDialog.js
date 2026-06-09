@@ -10,12 +10,12 @@
 
 import { html } from 'htm/preact'
 import { useState, useMemo } from 'preact/hooks'
-import { editSessionDialogSignal, mutationsEnabledSignal } from './state.js'
+import { editSessionDialogSignal, mutationsEnabledSignal, pickerToolsSignal } from './state.js'
 import { menuModelSignal } from './dataModel.js'
 import { Icon, ICONS } from './icons.js'
 import { apiFetch } from './api.js'
 
-const TOOLS = ['claude', 'codex', 'gemini', 'opencode', 'shell']
+const DEFAULT_TOOLS = ['claude', 'codex', 'gemini', 'opencode', 'shell']
 const TOOL_LABELS = { codex: 'ChatGPT' }
 
 // Build PATCH body from form state. Only includes fields that differ from
@@ -79,6 +79,13 @@ export function EditSessionDialog() {
   }
 
   if (!open || !mutationsEnabledSignal.value || !session) return null
+
+  const baseTools = pickerToolsSignal.value.length > 0 ? pickerToolsSignal.value : DEFAULT_TOOLS
+  const shownTools = [...baseTools]
+  const currentTool = session.tool || ''
+  if (currentTool && !shownTools.includes(currentTool)) {
+    shownTools.push(currentTool)
+  }
 
   async function handleSubmit(e) {
     e.preventDefault()
@@ -148,7 +155,7 @@ export function EditSessionDialog() {
           <div class="field">
             <label>TOOL (restart required)</label>
             <div class="seg-row">
-              ${TOOLS.map(t => html`
+              ${shownTools.map(t => html`
                 <button type="button" key=${t}
                         class=${`seg-btn ${tool === t ? 'on' : ''}`}
                         onClick=${() => setTool(t)}>${TOOL_LABELS[t] || t}</button>

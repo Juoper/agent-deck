@@ -248,6 +248,11 @@ type UISettings struct {
 	// tool.
 	ShowOnlyInstalledTools bool `toml:"show_only_installed_tools"`
 
+	// HiddenTools lists tool names to hide from the new-session picker (TUI + web).
+	// Denylist: absent or empty shows every tool (subject to show_only_installed_tools).
+	// shell is always shown and cannot be hidden.
+	HiddenTools []string `toml:"hidden_tools"`
+
 	// Footer controls the style of the bottom hint bar. Valid values:
 	//   "full" (default)    — the historic verbose bar: filled key chips,
 	//                         width-adaptive, advertising every action. This is
@@ -272,6 +277,43 @@ type UISettings struct {
 	// Ctrl+S becomes the explicit submit shortcut. Ctrl+S submits in BOTH modes —
 	// it is strictly additive and always available regardless of this toggle.
 	NewSessionEnterAdvances bool `toml:"new_session_enter_advances"`
+}
+
+// normalizeUIHiddenTools lowercases, dedupes, and drops unknown entries from
+// [ui].hidden_tools. shell cannot be hidden. Unknown names log a warning.
+func normalizeUIHiddenTools(ui *UISettings, customTools map[string]ToolDef) {
+	if ui == nil || len(ui.HiddenTools) == 0 {
+		return
+	}
+	known := make(map[string]bool, len(builtinTools())+len(customTools))
+	for _, bt := range builtinTools() {
+		known[bt.Name] = true
+	}
+	for name := range customTools {
+		known[name] = true
+	}
+
+	seen := make(map[string]bool, len(ui.HiddenTools))
+	out := make([]string, 0, len(ui.HiddenTools))
+	for _, raw := range ui.HiddenTools {
+		name := strings.ToLower(strings.TrimSpace(raw))
+		if name == "" || name == "shell" {
+			continue
+		}
+		if !known[name] {
+			registryLog.Warn("ignored unknown hidden_tools entry",
+				"name", raw,
+				"hint", "use a built-in or custom tool name from config.toml")
+			continue
+		}
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	ui.HiddenTools = out
 }
 
 // DefaultPreviewPct is the default preview-pane width percentage.
@@ -2282,6 +2324,8 @@ func LoadUserConfig() (*UserConfig, error) {
 	if config.Plugins == nil {
 		config.Plugins = make(map[string]PluginDef)
 	}
+
+	normalizeUIHiddenTools(&config.UI, config.Tools)
 
 	userConfigCache = &config
 	userConfigCacheMtime = currentMtime

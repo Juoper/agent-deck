@@ -47,10 +47,12 @@ const (
 	SettingStatsShowLoad
 	SettingSyncTitle
 	SettingShowSessionTimestamps
+	SettingShowOnlyInstalledTools
+	SettingVisibleTools
 )
 
 // Total number of navigable settings.
-const settingsCount = 31
+const settingsCount = 33
 
 // SettingsPanel displays and edits user configuration
 type SettingsPanel struct {
@@ -99,6 +101,8 @@ type SettingsPanel struct {
 	statsShowLoad       bool
 
 	showSessionTimestamps bool
+	showOnlyInstalledTools bool
+	pendingToolVisibility bool
 
 	// Text input state
 	editingText bool
@@ -331,6 +335,9 @@ func (s *SettingsPanel) LoadConfig(config *session.UserConfig) {
 
 	// Display settings
 	s.showSessionTimestamps = config.Display.ShowSessionTimestamps
+
+	// UI tool picker settings
+	s.showOnlyInstalledTools = config.UI.ShowOnlyInstalledTools
 }
 
 func (s *SettingsPanel) buildToolLists(config *session.UserConfig) {
@@ -461,6 +468,9 @@ func (s *SettingsPanel) GetConfig() *session.UserConfig {
 	// Display settings
 	config.Display.ShowSessionTimestamps = s.showSessionTimestamps
 
+	// UI tool picker settings
+	config.UI.ShowOnlyInstalledTools = s.showOnlyInstalledTools
+
 	// Preserve original MCPs, Tools, and Docker settings.
 	if s.originalConfig != nil {
 		config.MCPs = s.originalConfig.MCPs
@@ -538,10 +548,23 @@ func (s *SettingsPanel) Update(msg tea.KeyMsg) (*SettingsPanel, tea.Cmd, bool) {
 	case "enter":
 		if s.isTextSetting() {
 			s.startTextEdit()
+		} else if SettingType(s.cursor) == SettingVisibleTools {
+			s.pendingToolVisibility = true
+			s.Hide()
 		}
 	}
 
 	return s, nil, valueChanged
+}
+
+// ConsumeToolVisibilityRequest reports whether the user chose "Visible tools…"
+// and clears the latch.
+func (s *SettingsPanel) ConsumeToolVisibilityRequest() bool {
+	if !s.pendingToolVisibility {
+		return false
+	}
+	s.pendingToolVisibility = false
+	return true
 }
 
 // adjustValue changes a radio or number value by delta
@@ -711,6 +734,10 @@ func (s *SettingsPanel) toggleValue() bool {
 
 	case SettingShowSessionTimestamps:
 		s.showSessionTimestamps = !s.showSessionTimestamps
+		return true
+
+	case SettingShowOnlyInstalledTools:
+		s.showOnlyInstalledTools = !s.showOnlyInstalledTools
 		return true
 	}
 
@@ -1085,6 +1112,25 @@ func (s *SettingsPanel) View() string {
 	}
 	content.WriteString("  " + labelStyle.Render(line) + "\n\n")
 
+	// UI / TOOL PICKER
+	content.WriteString(sectionStyle.Render("TOOL PICKER"))
+	content.WriteString("\n")
+
+	line = s.renderCheckbox(
+		"Show only installed tools",
+		s.showOnlyInstalledTools,
+	) + " - Hide tools whose command is not on PATH"
+	if s.cursor == int(SettingShowOnlyInstalledTools) {
+		line = highlightStyle.Render(line)
+	}
+	content.WriteString("  " + labelStyle.Render(line) + "\n")
+
+	line = "Visible tools…  (Enter to edit checklist)"
+	if s.cursor == int(SettingVisibleTools) {
+		line = highlightStyle.Render(line)
+	}
+	content.WriteString("  " + labelStyle.Render(line) + "\n\n")
+
 	// MCP & TOOLS
 	content.WriteString(sectionStyle.Render("MCP SERVERS & CUSTOM TOOLS"))
 	content.WriteString("\n")
@@ -1149,6 +1195,8 @@ func (s *SettingsPanel) View() string {
 			51, // SettingStatsShowLoad
 			54, // SettingSyncTitle (SESSIONS section, after stats)
 			57, // SettingShowSessionTimestamps (DISPLAY section, after SESSIONS)
+			61, // SettingShowOnlyInstalledTools (TOOL PICKER section)
+			62, // SettingVisibleTools
 		}
 		cursorLine := cursorToLine[s.cursor]
 

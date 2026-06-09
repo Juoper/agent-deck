@@ -5,12 +5,12 @@ import { html } from 'htm/preact'
 import { useState } from 'preact/hooks'
 import {
   createSessionDialogSignal, mutationsEnabledSignal,
-  toolFilterSignal, visibleToolsSignal, toolFilterFallbackSignal,
+  toolFilterFallbackSignal, pickerToolsSignal,
 } from './state.js'
 import { Icon, ICONS } from './icons.js'
 import { apiFetch } from './api.js'
 
-const TOOLS = ['claude', 'codex', 'gemini', 'opencode', 'shell']
+const DEFAULT_TOOLS = ['claude', 'codex', 'gemini', 'opencode', 'shell']
 const CUSTOM_MODEL = '__custom__'
 const TOOL_LABELS = {
   codex: 'ChatGPT',
@@ -121,15 +121,9 @@ export function CreateSessionDialog() {
   const close = () => (createSessionDialogSignal.value = false)
   const handleBackdropClick = (e) => { if (e.target === e.currentTarget) close() }
   const modelIDs = modelIDsForTool(tool)
-  // show_only_installed_tools filter (issue #1259): when the flag is on (and the
-  // empty-fallback did NOT engage), intersect the static tool list against the
-  // server's PATH-resolved set. shell is always kept. With the flag off, or in
-  // fallback, every tool is shown — byte-identical to before.
-  const toolFilterOn = toolFilterSignal.value && !toolFilterFallbackSignal.value
-  const visibleToolSet = new Set(visibleToolsSignal.value)
-  const shownTools = toolFilterOn
-    ? TOOLS.filter(t => t === 'shell' || visibleToolSet.has(t))
-    : TOOLS
+  const pickerTools = pickerToolsSignal.value
+  const shownTools = (pickerTools.length > 0 ? pickerTools : DEFAULT_TOOLS)
+    .filter((t, i, arr) => arr.indexOf(t) === i)
   const needsCustomModel = modelId === CUSTOM_MODEL
   const submitDisabled = submitting || !title || !path || (needsCustomModel && !customModel.trim())
 
