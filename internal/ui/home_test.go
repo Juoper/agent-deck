@@ -482,6 +482,11 @@ func TestHomeRenameSessionComplete(t *testing.T) {
 	if h.instances[0].Title != "new-name" {
 		t.Errorf("Session title = %s, want new-name", h.instances[0].Title)
 	}
+	// The r-hotkey rename must lock the title so the #572 Claude-name sync
+	// (e.g. an auto-assigned plan title) can't revert it on the next hook event.
+	if !h.instances[0].TitleLocked {
+		t.Error("TitleLocked = false after r-hotkey rename, want true")
+	}
 }
 
 func TestHomeMoveSessionWithDuplicateGroupNamesUsesSelectedPath(t *testing.T) {
@@ -3410,13 +3415,16 @@ func TestHandleMainKeyQuickApproveSkipsNonClaudeTool(t *testing.T) {
 	}
 }
 
-// TestRegression743_NOnRemoteSession_QuickCreatesNoDialog guards #743.
+// TestRegression743_NOnRemoteSession_NeverCreatesLocally guards #743.
 // v1.7.68 shipped d9a5de8 which removed the remote early-return from the `n`
 // key handler, so pressing `n` on a remote session opened the local
-// newDialog and created a LOCAL session instead of a remote one. Restoring
-// the pre-d9a5de8 behavior: `n` on a remote-session cursor issues the remote
-// quick-create command and does NOT open the local new-session dialog.
-func TestRegression743_NOnRemoteSession_QuickCreatesNoDialog(t *testing.T) {
+// newDialog and created a LOCAL session instead of a remote one. Since #1353
+// the dialog DOES open for remote targets (so the user can pick a tool), but
+// the remote target must be recorded so submit routes the create to the
+// remote over SSH — the #743 invariant ("never create on localhost") is now
+// enforced at submit time. See issue1353_remote_new_dialog_test.go for the
+// submit-routing coverage.
+func TestRegression743_NOnRemoteSession_NeverCreatesLocally(t *testing.T) {
 	home := NewHome()
 	home.width = 100
 	home.height = 30
@@ -3425,22 +3433,22 @@ func TestRegression743_NOnRemoteSession_QuickCreatesNoDialog(t *testing.T) {
 	home.flatItems = []session.Item{{Type: session.ItemTypeRemoteSession, RemoteSession: &remote, RemoteName: "myserver"}}
 	home.cursor = 0
 
-	model, cmd := home.handleMainKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	model, _ := home.handleMainKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
 	h, ok := model.(*Home)
 	if !ok {
 		t.Fatal("handleMainKey should return *Home")
 	}
-	if cmd == nil {
-		t.Fatal("pressing n on a remote session must issue the remote quick-create command (was local dialog)")
+	if !h.newDialog.IsVisible() {
+		t.Fatal("pressing n on a remote session must open the new-session dialog (#1353)")
 	}
-	if h.newDialog.IsVisible() {
-		t.Fatal("pressing n on a remote session must NOT open the local new-session dialog")
+	if h.pendingRemoteName != "myserver" {
+		t.Fatalf("remote target must be recorded so submit creates on the remote, not localhost (#743); got %q", h.pendingRemoteName)
 	}
 }
 
-// TestRegression743_NOnRemoteGroup_QuickCreatesNoDialog — same contract for
+// TestRegression743_NOnRemoteGroup_NeverCreatesLocally — same contract for
 // cursor on a remote group header row.
-func TestRegression743_NOnRemoteGroup_QuickCreatesNoDialog(t *testing.T) {
+func TestRegression743_NOnRemoteGroup_NeverCreatesLocally(t *testing.T) {
 	home := NewHome()
 	home.width = 100
 	home.height = 30
@@ -3448,16 +3456,16 @@ func TestRegression743_NOnRemoteGroup_QuickCreatesNoDialog(t *testing.T) {
 	home.flatItems = []session.Item{{Type: session.ItemTypeRemoteGroup, RemoteName: "myserver", Path: "remotes/myserver"}}
 	home.cursor = 0
 
-	model, cmd := home.handleMainKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	model, _ := home.handleMainKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
 	h, ok := model.(*Home)
 	if !ok {
 		t.Fatal("handleMainKey should return *Home")
 	}
-	if cmd == nil {
-		t.Fatal("pressing n on a remote group must issue the remote quick-create command")
+	if !h.newDialog.IsVisible() {
+		t.Fatal("pressing n on a remote group must open the new-session dialog (#1353)")
 	}
-	if h.newDialog.IsVisible() {
-		t.Fatal("pressing n on a remote group must NOT open the local new-session dialog")
+	if h.pendingRemoteName != "myserver" {
+		t.Fatalf("remote target must be recorded so submit creates on the remote, not localhost (#743); got %q", h.pendingRemoteName)
 	}
 }
 
@@ -3544,4 +3552,88 @@ func TestHome_TerminalNavigationKeys(t *testing.T) {
 			t.Fatalf("cursor = %d, want 0 on empty list", got)
 		}
 	})
+}
+
+// defaultGroupItem returns a flat item for the protected "My Sessions" group.
+func defaultGroupItem() session.Item {
+	return session.Item{
+		Type:  session.ItemTypeGroup,
+		Path:  session.DefaultGroupPath,
+		Level: 0,
+		Group: &session.Group{
+			Name:     session.DefaultGroupName,
+			Path:     session.DefaultGroupPath,
+			Expanded: true,
+		},
+	}
+}
+
+// TestDeleteBindingOnDefaultGroupReportsError guards against the silent no-op
+// where pressing the delete binding ('d') on the protected "My Sessions"
+// default group did nothing: no dialog, no message. The handler must surface an
+// explanatory error (mirroring the scoped-root case) and must not open the
+// delete-group dialog.
+func TestDeleteBindingOnDefaultGroupReportsError(t *testing.T) {
+	home := newTestHomeWithItems(100, 30, []session.Item{defaultGroupItem()})
+	home.cursor = 0
+
+	model, _ := home.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	h := model.(*Home)
+
+	if h.err == nil {
+		t.Fatal("'d' on the default group must set an error, got nil (silent no-op)")
+	}
+	if !strings.Contains(h.err.Error(), session.DefaultGroupName) {
+		t.Errorf("error %q must name the default group %q", h.err.Error(), session.DefaultGroupName)
+	}
+	if h.confirmDialog.IsVisible() {
+		t.Error("delete-group confirmation must not open for the protected default group")
+	}
+}
+
+// TestDeleteBindingOnDefaultGroupWhenScopedNamesDefault locks in the ordering of
+// the delete handler: when the TUI is scoped to the default group itself
+// (groupScope == DefaultGroupPath), both the default-group and scoped-root
+// conditions match. The default-group message must win so the feedback stays
+// specific.
+func TestDeleteBindingOnDefaultGroupWhenScopedNamesDefault(t *testing.T) {
+	home := newTestHomeWithItems(100, 30, []session.Item{defaultGroupItem()})
+	home.cursor = 0
+	home.groupScope = session.DefaultGroupPath
+
+	model, _ := home.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	h := model.(*Home)
+
+	if h.err == nil {
+		t.Fatal("'d' on the scoped default group must set an error, got nil")
+	}
+	if !strings.Contains(h.err.Error(), session.DefaultGroupName) {
+		t.Errorf("scoped default group error %q must name the default group, not the scoped-root message", h.err.Error())
+	}
+}
+
+// TestDeleteBindingOnNonDefaultGroupOpensDialog is the positive counterpart: a
+// regular group still opens the delete confirmation, so the new default-group
+// branch does not shadow normal group deletion.
+func TestDeleteBindingOnNonDefaultGroupOpensDialog(t *testing.T) {
+	items := []session.Item{
+		{
+			Type:  session.ItemTypeGroup,
+			Path:  "work",
+			Level: 0,
+			Group: &session.Group{Name: "Work", Path: "work", Expanded: true},
+		},
+	}
+	home := newTestHomeWithItems(100, 30, items)
+	home.cursor = 0
+
+	model, _ := home.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	h := model.(*Home)
+
+	if !h.confirmDialog.IsVisible() {
+		t.Error("delete-group confirmation must open for a non-default group")
+	}
+	if h.err != nil {
+		t.Errorf("non-default group delete must not set an error, got %v", h.err)
+	}
 }
