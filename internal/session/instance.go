@@ -1668,7 +1668,7 @@ func (i *Instance) preAcceptCursorWorkspaceTrust() {
 	case i.IsSSH():
 		err = PreAcceptCursorTrustSSH(i.SSHHost, dir)
 	default:
-		err = PreAcceptCursorTrust(GetCursorConfigDir(), dir)
+		err = PreAcceptCursorTrust(GetCursorDataDir(), dir)
 	}
 	if err != nil {
 		sessionLog.Warn("cursor_preaccept_trust_failed",

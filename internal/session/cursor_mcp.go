@@ -23,6 +23,16 @@ func GetCursorConfigDir() string {
 	return filepath.Join(home, ".cursor")
 }
 
+// GetCursorDataDir returns the Cursor data directory where project metadata
+// (including ~/.cursor/projects workspace trust) is stored. Honors
+// CURSOR_DATA_DIR when set, matching cursor-agent's data-dir resolution.
+func GetCursorDataDir() string {
+	if v := strings.TrimSpace(os.Getenv("CURSOR_DATA_DIR")); v != "" {
+		return v
+	}
+	return GetCursorConfigDir()
+}
+
 // cursorProjectMCPPath resolves <project>/.cursor/mcp.json from a session project directory.
 // projectPath comes from agent-deck session metadata (local workspace), not remote input.
 func cursorProjectMCPPath(projectPath string) (string, error) {

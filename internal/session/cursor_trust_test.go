@@ -29,17 +29,57 @@ func TestCursorWorkspaceProjectKey(t *testing.T) {
 	}
 }
 
-func TestCursorWorkspaceProjectKey_AllowsDotsAndSpaces(t *testing.T) {
-	workspace := filepath.Join("/Users", "me", "my.repo", "My Project")
+func TestCursorSlugifyPath_SlugifiesDotsAndSpaces(t *testing.T) {
+	workspace := filepath.Join("/Users", "julian.thanner", "my.repo", "My Project")
 	key, err := cursorWorkspaceProjectKey(workspace)
 	if err != nil {
 		t.Fatalf("cursorWorkspaceProjectKey: %v", err)
 	}
-	if !strings.Contains(key, ".") {
-		t.Fatalf("key %q should preserve dots from workspace path", key)
+	want := "Users-julian-thanner-my-repo-My-Project"
+	if key != want {
+		t.Fatalf("key = %q, want %q", key, want)
 	}
-	if !strings.Contains(key, " ") {
-		t.Fatalf("key %q should preserve spaces from workspace path", key)
+	if strings.ContainsAny(key, ". ") {
+		t.Fatalf("key %q should not preserve dots or spaces", key)
+	}
+}
+
+func TestCursorSlugifyPath_CollapsesRepeatedSeparators(t *testing.T) {
+	if got := cursorSlugifyPath("/Users//me///proj"); got != "Users-me-proj" {
+		t.Fatalf("cursorSlugifyPath = %q, want Users-me-proj", got)
+	}
+}
+
+func TestGetCursorDataDir_HonorsEnv(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("CURSOR_DATA_DIR", filepath.Join(tmpHome, "custom-cursor-data"))
+
+	got := GetCursorDataDir()
+	want := filepath.Join(tmpHome, "custom-cursor-data")
+	if got != want {
+		t.Fatalf("GetCursorDataDir() = %q, want %q", got, want)
+	}
+}
+
+func TestPreAcceptCursorTrust_UsesCursorDataDir(t *testing.T) {
+	tmpHome := t.TempDir()
+	dataDir := filepath.Join(tmpHome, "cursor-data")
+	t.Setenv("CURSOR_DATA_DIR", dataDir)
+	workspace := filepath.Join(tmpHome, "proj")
+
+	inst := NewInstanceWithTool("cursor-trust-data-dir", workspace, "cursor")
+	inst.preAcceptCursorWorkspaceTrust()
+
+	trustPath, _, err := cursorWorkspaceTrustPath(GetCursorDataDir(), workspace)
+	if err != nil {
+		t.Fatalf("cursorWorkspaceTrustPath: %v", err)
+	}
+	if _, err := os.Stat(trustPath); err != nil {
+		t.Fatalf("trust file missing under CURSOR_DATA_DIR: %v", err)
+	}
+	if !strings.HasPrefix(trustPath, dataDir+string(os.PathSeparator)) {
+		t.Fatalf("trust path %q not under CURSOR_DATA_DIR %q", trustPath, dataDir)
 	}
 }
 
@@ -106,7 +146,7 @@ func TestPreAcceptCursorTrust_Idempotent(t *testing.T) {
 
 func TestPreAcceptCursorTrust_EmptyInputs(t *testing.T) {
 	if err := PreAcceptCursorTrust("", "/tmp"); err == nil {
-		t.Fatal("expected error for empty cursorConfigDir")
+		t.Fatal("expected error for empty cursorDataDir")
 	}
 	if err := PreAcceptCursorTrust("/tmp/.cursor", ""); err == nil {
 		t.Fatal("expected error for empty workspacePath")
@@ -172,7 +212,7 @@ func TestInstance_preAcceptCursorWorkspaceTrust_Local(t *testing.T) {
 	inst := NewInstanceWithTool("cursor-trust", workspace, "cursor")
 	inst.preAcceptCursorWorkspaceTrust()
 
-	trustPath, absWorkspace, err := cursorWorkspaceTrustPath(GetCursorConfigDir(), workspace)
+	trustPath, absWorkspace, err := cursorWorkspaceTrustPath(GetCursorDataDir(), workspace)
 	if err != nil {
 		t.Fatalf("cursorWorkspaceTrustPath: %v", err)
 	}
@@ -258,10 +298,13 @@ exit 99
 }
 
 func TestBuildCursorTrustRemoteShellScript_ExpandsHome(t *testing.T) {
-	pathSetup := "key='foo'\npath=\"$HOME/.cursor/projects/$key/.workspace-trusted\""
+	pathSetup := "key='foo'\ndata_dir=\"${CURSOR_DATA_DIR:-$HOME/.cursor}\"\npath=\"$data_dir/projects/$key/.workspace-trusted\""
 	script := buildCursorTrustRemoteShellScript(pathSetup, []byte("data\n"))
-	if !strings.Contains(script, `path="$HOME/.cursor/projects/$key/.workspace-trusted"`) {
-		t.Fatalf("script missing HOME path expansion: %s", script)
+	if !strings.Contains(script, `data_dir="${CURSOR_DATA_DIR:-$HOME/.cursor}"`) {
+		t.Fatalf("script missing CURSOR_DATA_DIR fallback: %s", script)
+	}
+	if !strings.Contains(script, `path="$data_dir/projects/$key/.workspace-trusted"`) {
+		t.Fatalf("script missing data_dir path expansion: %s", script)
 	}
 	if !strings.Contains(script, "mktemp") || !strings.Contains(script, `ln "$tmp" "$path"`) {
 		t.Fatalf("script missing temp-file exclusive link: %s", script)
@@ -429,7 +472,7 @@ func TestValidateCursorTrustPathContained(t *testing.T) {
 	}
 	outside := filepath.Join(t.TempDir(), "outside", ".workspace-trusted")
 	if err := validateCursorTrustPathContained(configDir, outside); err == nil {
-		t.Fatal("expected path outside cursor config dir to be rejected")
+		t.Fatal("expected path outside cursor data dir to be rejected")
 	}
 }
 
@@ -483,7 +526,7 @@ func TestInstance_Start_CursorSeedsWorkspaceTrust(t *testing.T) {
 	}
 	defer func() { _ = inst.Kill() }()
 
-	trustPath, _, err := cursorWorkspaceTrustPath(GetCursorConfigDir(), workspace)
+	trustPath, _, err := cursorWorkspaceTrustPath(GetCursorDataDir(), workspace)
 	if err != nil {
 		t.Fatalf("cursorWorkspaceTrustPath: %v", err)
 	}

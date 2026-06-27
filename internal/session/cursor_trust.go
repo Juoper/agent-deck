@@ -24,8 +24,7 @@ const (
 )
 
 // validateCursorProjectKey rejects project keys that could escape the projects/
-// subtree via path traversal. Cursor itself allows dots, spaces, and other
-// characters from the workspace path in the slug.
+// subtree via path traversal.
 func validateCursorProjectKey(key string) error {
 	if key == "" {
 		return fmt.Errorf("cursor project key is empty")
@@ -40,19 +39,19 @@ func validateCursorProjectKey(key string) error {
 }
 
 // validateCursorTrustPathContained ensures trustPath stays under
-// cursorConfigDir/projects/ and names the expected trust file.
-func validateCursorTrustPathContained(cursorConfigDir, trustPath string) error {
-	cleanConfig, err := filepath.Abs(filepath.Clean(cursorConfigDir))
+// cursorDataDir/projects/ and names the expected trust file.
+func validateCursorTrustPathContained(cursorDataDir, trustPath string) error {
+	cleanData, err := filepath.Abs(filepath.Clean(cursorDataDir))
 	if err != nil {
-		return fmt.Errorf("abs cursor config dir: %w", err)
+		return fmt.Errorf("abs cursor data dir: %w", err)
 	}
 	cleanTrust, err := filepath.Abs(filepath.Clean(trustPath))
 	if err != nil {
 		return fmt.Errorf("abs trust path: %w", err)
 	}
-	projectsRoot := filepath.Join(cleanConfig, "projects")
+	projectsRoot := filepath.Join(cleanData, "projects")
 	if cleanTrust != projectsRoot && !strings.HasPrefix(cleanTrust, projectsRoot+string(os.PathSeparator)) {
-		return fmt.Errorf("trust path %q escapes cursor config dir", trustPath)
+		return fmt.Errorf("trust path %q escapes cursor data dir", trustPath)
 	}
 	if filepath.Base(cleanTrust) != ".workspace-trusted" {
 		return fmt.Errorf("trust path %q is not a .workspace-trusted file", trustPath)
@@ -60,9 +59,30 @@ func validateCursorTrustPathContained(cursorConfigDir, trustPath string) error {
 	return nil
 }
 
-// cursorWorkspaceProjectKey maps an absolute workspace path to the directory
-// name Cursor uses under ~/.cursor/projects/ (e.g.
-// /Users/me/proj → Users-me-proj).
+// cursorSlugifyPath mirrors cursor-agent slugifyPath: every non-alphanumeric
+// rune becomes '-', consecutive hyphens collapse, and leading/trailing hyphens
+// are trimmed (e.g. /Users/me/proj → Users-me-proj).
+func cursorSlugifyPath(path string) string {
+	var b strings.Builder
+	b.Grow(len(path))
+	prevHyphen := false
+	for _, r := range path {
+		isAlnum := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')
+		if isAlnum {
+			b.WriteRune(r)
+			prevHyphen = false
+			continue
+		}
+		if !prevHyphen {
+			b.WriteByte('-')
+			prevHyphen = true
+		}
+	}
+	return strings.Trim(b.String(), "-")
+}
+
+// cursorWorkspaceProjectKey maps a workspace path to the directory name Cursor
+// uses under <dataDir>/projects/.
 func cursorWorkspaceProjectKey(workspacePath string) (string, error) {
 	if workspacePath == "" {
 		return "", fmt.Errorf("workspacePath is empty")
@@ -71,9 +91,7 @@ func cursorWorkspaceProjectKey(workspacePath string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("abs %s: %w", workspacePath, err)
 	}
-	abs = strings.TrimSuffix(abs, string(os.PathSeparator))
-	key := strings.TrimPrefix(abs, string(os.PathSeparator))
-	key = strings.ReplaceAll(key, string(os.PathSeparator), "-")
+	key := cursorSlugifyPath(abs)
 	if key == "" {
 		return "", fmt.Errorf("workspacePath resolves to empty key: %s", workspacePath)
 	}
@@ -83,11 +101,11 @@ func cursorWorkspaceProjectKey(workspacePath string) (string, error) {
 	return key, nil
 }
 
-// cursorWorkspaceTrustPath returns the ~/.cursor/projects/<key>/.workspace-trusted
+// cursorWorkspaceTrustPath returns the <dataDir>/projects/<key>/.workspace-trusted
 // path for workspacePath.
-func cursorWorkspaceTrustPath(cursorConfigDir, workspacePath string) (string, string, error) {
-	if cursorConfigDir == "" {
-		return "", "", fmt.Errorf("cursorConfigDir is empty")
+func cursorWorkspaceTrustPath(cursorDataDir, workspacePath string) (string, string, error) {
+	if cursorDataDir == "" {
+		return "", "", fmt.Errorf("cursorDataDir is empty")
 	}
 	key, err := cursorWorkspaceProjectKey(workspacePath)
 	if err != nil {
@@ -97,9 +115,9 @@ func cursorWorkspaceTrustPath(cursorConfigDir, workspacePath string) (string, st
 	if err != nil {
 		return "", "", fmt.Errorf("abs %s: %w", workspacePath, err)
 	}
-	projectDir := filepath.Join(cursorConfigDir, "projects", key)
+	projectDir := filepath.Join(cursorDataDir, "projects", key)
 	trustPath := filepath.Join(projectDir, ".workspace-trusted")
-	if err := validateCursorTrustPathContained(cursorConfigDir, trustPath); err != nil {
+	if err := validateCursorTrustPathContained(cursorDataDir, trustPath); err != nil {
 		return "", "", err
 	}
 	return trustPath, abs, nil
@@ -131,7 +149,7 @@ func writeCursorTrustFileExclusive(trustPath string, content []byte) error {
 	if err := os.MkdirAll(filepath.Dir(trustPath), 0o755); err != nil {
 		return fmt.Errorf("mkdir parent of %s: %w", trustPath, err)
 	}
-	// #nosec G304 -- trustPath is confined under cursorConfigDir/projects by
+	// #nosec G304 -- trustPath is confined under cursorDataDir/projects by
 	// validateCursorTrustPathContained before this write is attempted.
 	if err := writeFileIfAbsent(trustPath, content, 0o644); err != nil {
 		return fmt.Errorf("write %s: %w", trustPath, err)
@@ -139,19 +157,20 @@ func writeCursorTrustFileExclusive(trustPath string, content []byte) error {
 	return nil
 }
 
-// PreAcceptCursorTrust seeds ~/.cursor/projects/<key>/.workspace-trusted for
+// PreAcceptCursorTrust seeds <dataDir>/projects/<key>/.workspace-trusted for
 // workspacePath so interactive `cursor agent` skips the workspace-trust prompt.
+// Pass GetCursorDataDir() for cursorDataDir so CURSOR_DATA_DIR is honored.
 //
 // Cursor keys trust by the literal workspace path (stored in the JSON file) and
-// a slugified directory under ~/.cursor/projects/. Pre-seeding matches what
+// a slugified directory under <dataDir>/projects/. Pre-seeding matches what
 // accepting the prompt in the UI would write. This mirrors Cursor's observed
 // trust format as of 2026-06; if Cursor changes that schema, seeding may become
 // a harmless no-op until this mapping is updated.
 //
 // If the trust file already exists it is left unchanged. Malformed existing
 // trust files are not overwritten.
-func PreAcceptCursorTrust(cursorConfigDir, workspacePath string) error {
-	trustPath, _, err := cursorWorkspaceTrustPath(cursorConfigDir, workspacePath)
+func PreAcceptCursorTrust(cursorDataDir, workspacePath string) error {
+	trustPath, _, err := cursorWorkspaceTrustPath(cursorDataDir, workspacePath)
 	if err != nil {
 		return err
 	}
@@ -238,7 +257,10 @@ func PreAcceptCursorTrustSSH(host, workspacePath string) error {
 	if err != nil {
 		return err
 	}
-	pathSetup := fmt.Sprintf("key=%s\npath=\"$HOME/.cursor/projects/$key/.workspace-trusted\"", shellQuote(key))
+	pathSetup := fmt.Sprintf(
+		"key=%s\ndata_dir=\"${CURSOR_DATA_DIR:-$HOME/.cursor}\"\npath=\"$data_dir/projects/$key/.workspace-trusted\"",
+		shellQuote(key),
+	)
 	script := buildCursorTrustRemoteShellScript(pathSetup, content)
 	return runCursorTrustRemoteScript(host, script)
 }
